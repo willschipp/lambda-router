@@ -1,27 +1,52 @@
-var http = require('http');
-var httpProxy = require('http-proxy');
-var url = require('url');
+var express = require('express');
+var app = express();
+var unirest = require('unirest');
+var Docker = require('dockerode');
 
-var proxy = httpProxy.createProxyServer().listen(5000);
+app.use(require('body-parser').json());
+app.use(require('body-parser').urlencoded({ extended: true }));
 
-proxy.on('error',function(e,req,res) {
-  console.log(e);
-  res.writeHead(500, {
-    'Content-Type': 'text/plain'
+var templateUrl = 'http://%%:3000';
+var docker = new Docker({
+  host:'172.16.217.132', //TODO <-- replace this
+  port:'12375' //TODO <-- weave ip address
+});
+
+
+app.post('/',function(req,res) {
+  var targetUrl = templateUrl.replace('%%',req.query.functionName);
+  unirest.post(targetUrl)
+  .timeout(500)
+  .send(req.body)
+  .end(function(response) {
+    console.log(response.error == undefined);
+    if (response.error != undefined) {
+      docker.listContainers({'all':true},function(err,containers) {
+        containers.forEach(function(containerInfo) {
+          var containerName = containerInfo.Names[0].substring(1);
+          if (containerName == req.query.functionName) {
+            //this is the one --> start it
+            docker.getContainer(containerInfo.Id).start(function(err,data) {
+              //wait 5 seconds and hit it again --> arbitrary five minues
+              setTimeout(function() {
+                unirest.post(targetUrl).send().end(function(resp) {
+                  // return res.send(resp.body);
+                  res.send(resp.body);
+                  //shutdown the container
+                  docker.getContainer(containerInfo.Id).stop(function(err,data) {
+                    return;
+                  });
+                });
+              },3000);
+            });
+          }//end if
+        });
+      });
+    } else {
+      return res.send(response.body);
+    }//end if
   });
-  res.end('Something went wrong. And we are reporting a custom error message.');
 });
 
-var server = http.createServer(function(req,res) {
-  var parsedUrl = url.parse(req.url,true);
-  var queryObject = parsedUrl.query;
 
-  var buildUrl = 'http://' + queryObject.functionName + ':3000';
-
-  console.log(buildUrl);
-
-  proxy.web(req,res,{target:buildUrl});
-
-});
-
-server.listen(80);
+app.listen(80);
